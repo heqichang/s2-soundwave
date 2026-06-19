@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { usePlayerStore } from "@/store/playerStore";
+import { useEditorStore } from "@/store/editorStore";
 import type { AudioFile, AudioFormat } from "@/types/audio";
 import { generateId } from "@/utils/format";
 import { useWaveform } from "./useWaveform";
@@ -25,6 +26,8 @@ export function useAudioPlayer() {
     stop,
   } = usePlayerStore();
 
+  const { selection, playbackMode, audioBuffer, setAudioBuffer, resetEditor } = useEditorStore();
+
   const ensureAudioElement = useCallback(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio();
@@ -38,6 +41,35 @@ export function useAudioPlayer() {
     audio.muted = isMuted;
   }, [ensureAudioElement, isMuted, volume]);
 
+  const updateAudioSrcFromBuffer = useCallback(
+    async (buffer: AudioBuffer) => {
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      const offlineCtx = new OfflineAudioContext(
+        buffer.numberOfChannels,
+        buffer.length,
+        buffer.sampleRate,
+      );
+      const source = offlineCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(offlineCtx.destination);
+      source.start();
+      const rendered = await offlineCtx.startRendering();
+      const wavBlob = audioBufferToWav(rendered);
+      const url = URL.createObjectURL(wavBlob);
+      const audio = ensureAudioElement();
+      const wasPlaying = !audio.paused;
+      audio.src = url;
+      audio.load();
+      if (wasPlaying) {
+        audio.play().catch(console.error);
+      }
+    },
+    [ensureAudioElement],
+  );
+
   const loadFile = useCallback(
     async (file: File): Promise<AudioFile | null> => {
       try {
@@ -48,7 +80,10 @@ export function useAudioPlayer() {
           setWaveformData(data);
         });
 
-        const formatPromise = new Promise<AudioFormat>((resolve) => {
+        const formatAndBufferPromise = new Promise<{
+          format: AudioFormat;
+          buffer: AudioBuffer;
+        }>((resolve) => {
           file
             .arrayBuffer()
             .then(async (buffer) => {
@@ -63,18 +98,23 @@ export function useAudioPlayer() {
                   ? (file.size * 8) / decoded.duration / 1000
                   : undefined;
 
+                const clonedBuffer = cloneAudioBuffer(decoded);
+
                 ctx.close().catch(() => {});
 
                 resolve({
-                  sampleRate: decoded.sampleRate,
-                  channels: decoded.numberOfChannels,
-                  bitRate,
+                  format: {
+                    sampleRate: decoded.sampleRate,
+                    channels: decoded.numberOfChannels,
+                    bitRate,
+                  },
+                  buffer: clonedBuffer,
                 });
               } catch {
-                resolve({});
+                resolve({ format: {}, buffer: null as unknown as AudioBuffer });
               }
             })
-            .catch(() => resolve({}));
+            .catch(() => resolve({ format: {}, buffer: null as unknown as AudioBuffer }));
         });
 
         audio.src = url;
@@ -96,9 +136,14 @@ export function useAudioPlayer() {
           audio.addEventListener("error", onError);
         });
 
-        await Promise.all([loadPromise, waveformPromise, formatPromise]);
+        await Promise.all([loadPromise, waveformPromise, formatAndBufferPromise]);
 
-        const format = await formatPromise;
+        const { format, buffer: decodedBuffer } = await formatAndBufferPromise;
+
+        if (decodedBuffer) {
+          setAudioBuffer(decodedBuffer);
+          useEditorStore.getState().pushHistory({ audioBuffer: decodedBuffer, label: "加载" });
+        }
 
         const audioFile: AudioFile = {
           id: generateId(),
@@ -126,6 +171,7 @@ export function useAudioPlayer() {
       setWaveformData,
       setDuration,
       addRecentFile,
+      setAudioBuffer,
     ],
   );
 
@@ -218,6 +264,24 @@ export function useAudioPlayer() {
     [seek],
   );
 
+  const playSelection = useCallback(() => {
+    if (!selection) return;
+    const audio = ensureAudioElement();
+    audio.currentTime = selection.start;
+    applyVolume();
+    audio.play().catch(console.error);
+    setPlaying(true);
+  }, [selection, ensureAudioElement, applyVolume, setPlaying]);
+
+  const playFromSelection = useCallback(() => {
+    if (!selection) return;
+    const audio = ensureAudioElement();
+    audio.currentTime = selection.start;
+    applyVolume();
+    audio.play().catch(console.error);
+    setPlaying(true);
+  }, [selection, ensureAudioElement, applyVolume, setPlaying]);
+
   const changeVolume = useCallback(
     (newVolume: number) => {
       setVolume(newVolume);
@@ -264,6 +328,17 @@ export function useAudioPlayer() {
 
     const onTimeUpdate = () => {
       setCurrentTime(audio.currentTime);
+
+      if (selection && playbackMode !== "normal") {
+        if (audio.currentTime >= selection.end) {
+          if (playbackMode === "loop-selection") {
+            audio.currentTime = selection.start;
+          } else if (playbackMode === "play-selection") {
+            audio.pause();
+            setPlaying(false);
+          }
+        }
+      }
     };
 
     const onDurationChange = () => {
@@ -304,6 +379,8 @@ export function useAudioPlayer() {
     setPlaying,
     playNext,
     stopPlayback,
+    selection,
+    playbackMode,
   ]);
 
   useEffect(() => {
@@ -351,7 +428,80 @@ export function useAudioPlayer() {
     toggleMute,
     playNext,
     playPrev,
+    playSelection,
+    playFromSelection,
+    updateAudioSrcFromBuffer,
     isPlaying,
     currentFile,
   };
+}
+
+function cloneAudioBuffer(audioBuffer: AudioBuffer): AudioBuffer {
+  const AudioContextClass =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  const ctx = new AudioContextClass();
+  const newBuffer = ctx.createBuffer(
+    audioBuffer.numberOfChannels,
+    audioBuffer.length,
+    audioBuffer.sampleRate,
+  );
+  for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+    const sourceData = audioBuffer.getChannelData(ch);
+    newBuffer.copyToChannel(new Float32Array(sourceData), ch);
+  }
+  ctx.close().catch(() => {});
+  return newBuffer;
+}
+
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const format = 1;
+  const bitDepth = 16;
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataLength = buffer.length * blockAlign;
+  const headerLength = 44;
+  const totalLength = headerLength + dataLength;
+  const arrayBuffer = new ArrayBuffer(totalLength);
+  const view = new DataView(arrayBuffer);
+
+  function writeString(offset: number, str: string) {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  }
+
+  writeString(0, "RIFF");
+  view.setUint32(4, totalLength - 8, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, "data");
+  view.setUint32(40, dataLength, true);
+
+  const channels: Float32Array[] = [];
+  for (let ch = 0; ch < numChannels; ch++) {
+    channels.push(buffer.getChannelData(ch));
+  }
+
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const sample = Math.max(-1, Math.min(1, channels[ch][i]));
+      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16(offset, intSample, true);
+      offset += 2;
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: "audio/wav" });
 }

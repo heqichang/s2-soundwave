@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Waves, Sparkles } from "lucide-react";
 import FileUploader from "@/components/FileUploader";
 import Waveform from "@/components/Waveform";
@@ -8,8 +8,11 @@ import VolumeControl from "@/components/VolumeControl";
 import AudioInfo from "@/components/AudioInfo";
 import RecentFiles from "@/components/RecentFiles";
 import Playlist from "@/components/Playlist";
+import EditToolbar from "@/components/EditToolbar";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { useAudioEditor } from "@/hooks/useAudioEditor";
 import { usePlayerStore } from "@/store/playerStore";
+import { useEditorStore } from "@/store/editorStore";
 import type { AudioFile } from "@/types/audio";
 import { getFileNameWithoutExtension } from "@/utils/format";
 import clsx from "clsx";
@@ -26,8 +29,27 @@ export default function Home() {
     toggleMute,
     playNext,
     playPrev,
+    playSelection,
+    playFromSelection,
+    updateAudioSrcFromBuffer,
     currentFile,
   } = useAudioPlayer();
+
+  const {
+    handleCopy,
+    handleCut,
+    handlePaste,
+    handleDelete,
+    handleTrim,
+    handleFadeIn,
+    handleFadeOut,
+    handleUndo,
+    handleRedo,
+    handleSelectAll,
+    clearSelection,
+    resetEditor,
+    audioBuffer,
+  } = useAudioEditor();
 
   const {
     playlist,
@@ -75,6 +97,80 @@ export default function Home() {
       : "SoundWave - 音频播放器";
   }, [currentFile]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case "a":
+            e.preventDefault();
+            handleSelectAll();
+            break;
+          case "c":
+            e.preventDefault();
+            handleCopy();
+            break;
+          case "x":
+            e.preventDefault();
+            handleCut();
+            break;
+          case "v":
+            e.preventDefault();
+            handlePaste();
+            break;
+          case "z":
+            e.preventDefault();
+            if (e.shiftKey) {
+              handleRedo();
+            } else {
+              handleUndo();
+            }
+            break;
+          case "y":
+            e.preventDefault();
+            handleRedo();
+            break;
+        }
+        return;
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const { selection } = useEditorStore.getState();
+        if (selection) {
+          e.preventDefault();
+          handleDelete();
+        }
+      }
+
+      if (e.key === "Escape") {
+        clearSelection();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleCopy, handleCut, handlePaste, handleDelete, handleUndo, handleRedo, handleSelectAll, clearSelection]);
+
+  const isInitialLoad = useRef(true);
+
+  useEffect(() => {
+    if (!currentFile) {
+      isInitialLoad.current = true;
+    }
+  }, [currentFile]);
+
+  useEffect(() => {
+    if (!audioBuffer) return;
+    if (isInitialLoad.current) {
+      isInitialLoad.current = false;
+      return;
+    }
+    updateAudioSrcFromBuffer(audioBuffer).catch(console.error);
+  }, [audioBuffer, updateAudioSrcFromBuffer]);
+
   return (
     <div className="min-h-screen w-full bg-noise relative overflow-hidden">
       <div className="absolute inset-0 pointer-events-none">
@@ -100,7 +196,7 @@ export default function Home() {
 
           <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-800/60 border border-surface-700/40">
             <Sparkles size={14} className="text-brand-400" />
-            <span className="text-xs text-surface-400">空格键播放 / 暂停</span>
+            <span className="text-xs text-surface-400">空格键播放 / 暂停 · Ctrl+A 全选</span>
           </div>
         </header>
 
@@ -154,23 +250,39 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="mb-6">
+                <div className="mb-4">
                   <Waveform onSeek={seekByPercent} />
                 </div>
 
-                <div className="mb-6">
+                <div className="mb-4">
                   <ProgressBar onSeek={seek} />
                 </div>
 
-                <PlayerControls
-                  onPlay={play}
-                  onPause={pause}
-                  onStop={stopPlayback}
-                  onPrev={playPrev}
-                  onNext={playNext}
+                <EditToolbar
+                  onCopy={handleCopy}
+                  onCut={handleCut}
+                  onPaste={handlePaste}
+                  onDelete={handleDelete}
+                  onTrim={handleTrim}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
+                  onFadeIn={handleFadeIn}
+                  onFadeOut={handleFadeOut}
                 />
 
-                <div className="mt-6 flex items-center justify-center">
+                <div className="mt-4">
+                  <PlayerControls
+                    onPlay={play}
+                    onPause={pause}
+                    onStop={stopPlayback}
+                    onPrev={playPrev}
+                    onNext={playNext}
+                    onPlaySelection={playSelection}
+                    onPlayFromSelection={playFromSelection}
+                  />
+                </div>
+
+                <div className="mt-4 flex items-center justify-center">
                   <VolumeControl
                     onVolumeChange={changeVolume}
                     onToggleMute={toggleMute}

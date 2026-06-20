@@ -24,7 +24,6 @@ export function useAudioRecorder() {
     isProcessing,
     duration,
     level,
-    waveform,
     recordedBlob,
     audioBuffer,
     settings,
@@ -36,7 +35,6 @@ export function useAudioRecorder() {
     setDuration,
     setLevel,
     setWaveform,
-    appendWaveform,
     setRecordedBlob,
     setAudioBuffer,
     setSettings,
@@ -78,7 +76,12 @@ export function useAudioRecorder() {
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
     const updateLevel = () => {
-      if (!analyserRef.current || !isRecording) return;
+      if (!analyserRef.current) return;
+
+      const state = useRecordingStore.getState();
+      if (!state.isRecording) {
+        return;
+      }
 
       analyserRef.current.getByteTimeDomainData(dataArray);
 
@@ -91,20 +94,20 @@ export function useAudioRecorder() {
       const db = rms > 0 ? 20 * Math.log10(rms) : -100;
       const normalizedLevel = Math.max(0, Math.min(1, (db + 60) / 60));
 
-      setLevel(normalizedLevel);
-      appendWaveform(normalizedLevel);
+      state.setLevel(normalizedLevel);
+      state.appendWaveform(normalizedLevel);
 
-      if (!isPaused) {
+      if (!state.isPaused) {
         const elapsed =
           (performance.now() - startTimeRef.current - pausedDurationRef.current) / 1000;
-        setDuration(elapsed);
+        state.setDuration(elapsed);
       }
 
       animationFrameRef.current = requestAnimationFrame(updateLevel);
     };
 
-    updateLevel();
-  }, [setLevel, appendWaveform, setDuration, isRecording, isPaused]);
+    animationFrameRef.current = requestAnimationFrame(updateLevel);
+  }, []);
 
   const stopAnalyser = useCallback(() => {
     if (animationFrameRef.current) {
@@ -198,11 +201,12 @@ export function useAudioRecorder() {
       setDuration(0);
       setLevel(0);
 
-      startAnalyser(stream);
-      mediaRecorder.start(100);
       setRecording(true);
       setPaused(false);
       setProcessing(false);
+
+      startAnalyser(stream);
+      mediaRecorder.start(100);
     } catch (err) {
       setProcessing(false);
       setError("开始录音失败：" + (err instanceof Error ? err.message : "未知错误"));
@@ -345,7 +349,7 @@ export function useAudioRecorder() {
     isProcessing,
     duration,
     level,
-    waveform,
+    waveform: useRecordingStore.getState().waveform,
     recordedBlob,
     audioBuffer,
     settings,

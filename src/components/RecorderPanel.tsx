@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Mic, MicOff, Pause, Play, Square, Plus, Settings, RefreshCw } from "lucide-react";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { useRecordingStore } from "@/store/recordingStore";
 import {
   SAMPLE_RATE_OPTIONS,
   BIT_DEPTH_OPTIONS,
@@ -13,6 +14,96 @@ interface RecorderPanelProps {
   onClose?: () => void;
 }
 
+function drawWaveform(canvas: HTMLCanvasElement, waveform: number[]) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.width / dpr;
+  const height = canvas.height / dpr;
+
+  ctx.clearRect(0, 0, width, height);
+
+  if (waveform.length === 0) {
+    ctx.fillStyle = "rgba(51, 65, 85, 0.3)";
+    for (let i = 0; i < 60; i++) {
+      const barWidth = width / 60 - 1;
+      const barHeight = height * 0.2;
+      const x = i * (barWidth + 1);
+      const y = (height - barHeight) / 2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, barWidth, barHeight, 1);
+      ctx.fill();
+    }
+    return;
+  }
+
+  const barCount = Math.min(waveform.length, 100);
+  const startIdx = Math.max(0, waveform.length - barCount);
+  const visibleWaveform = waveform.slice(startIdx);
+  const barWidth = width / barCount - 1;
+
+  for (let i = 0; i < barCount; i++) {
+    const amp = visibleWaveform[i] || 0;
+    const barHeight = Math.max(2, amp * height * 0.9);
+    const x = i * (barWidth + 1);
+    const y = (height - barHeight) / 2;
+
+    const gradient = ctx.createLinearGradient(x, y, x, y + barHeight);
+    gradient.addColorStop(0, "rgba(34, 211, 238, 0.9)");
+    gradient.addColorStop(1, "rgba(139, 92, 246, 0.9)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.roundRect(x, y, barWidth, barHeight, 1);
+    ctx.fill();
+  }
+}
+
+function drawLevel(canvas: HTMLCanvasElement, level: number) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.width / dpr;
+  const height = canvas.height / dpr;
+
+  ctx.clearRect(0, 0, width, height);
+
+  const segmentCount = 30;
+  const segmentWidth = width / segmentCount - 2;
+  const filledSegments = Math.floor(level * segmentCount);
+
+  for (let i = 0; i < segmentCount; i++) {
+    const x = i * (segmentWidth + 2);
+    const isFilled = i < filledSegments;
+
+    let color: string;
+    if (i < segmentCount * 0.6) {
+      color = isFilled ? "#22c55e" : "rgba(34, 197, 94, 0.2)";
+    } else if (i < segmentCount * 0.85) {
+      color = isFilled ? "#eab308" : "rgba(234, 179, 8, 0.2)";
+    } else {
+      color = isFilled ? "#ef4444" : "rgba(239, 68, 68, 0.2)";
+    }
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(x, 0, segmentWidth, height, 2);
+    ctx.fill();
+  }
+}
+
+function setupCanvas(canvas: HTMLCanvasElement) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
 export default function RecorderPanel({ onClose }: RecorderPanelProps) {
   const {
     isRecording,
@@ -20,7 +111,6 @@ export default function RecorderPanel({ onClose }: RecorderPanelProps) {
     isProcessing,
     duration,
     level,
-    waveform,
     recordedBlob,
     audioBuffer,
     settings,
@@ -38,101 +128,37 @@ export default function RecorderPanel({ onClose }: RecorderPanelProps) {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const levelCanvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const waveCanvas = canvasRef.current;
+    const levelCanvas = levelCanvasRef.current;
+    if (!waveCanvas || !levelCanvas) return;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    setupCanvas(waveCanvas);
+    setupCanvas(levelCanvas);
 
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    const resizeObserver = new ResizeObserver(() => {
+      setupCanvas(waveCanvas);
+      setupCanvas(levelCanvas);
+    });
+    resizeObserver.observe(waveCanvas.parentElement!);
 
-    const width = rect.width;
-    const height = rect.height;
+    const render = () => {
+      const state = useRecordingStore.getState();
+      drawWaveform(waveCanvas, state.waveform);
+      drawLevel(levelCanvas, state.level);
+      rafRef.current = requestAnimationFrame(render);
+    };
+    rafRef.current = requestAnimationFrame(render);
 
-    ctx.clearRect(0, 0, width, height);
-
-    if (waveform.length === 0) {
-      ctx.fillStyle = "rgba(51, 65, 85, 0.3)";
-      for (let i = 0; i < 60; i++) {
-        const barWidth = width / 60 - 1;
-        const barHeight = height * 0.2;
-        const x = i * (barWidth + 1);
-        const y = (height - barHeight) / 2;
-        ctx.beginPath();
-        ctx.roundRect(x, y, barWidth, barHeight, 1);
-        ctx.fill();
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
       }
-      return;
-    }
-
-    const barCount = Math.min(waveform.length, 100);
-    const startIdx = Math.max(0, waveform.length - barCount);
-    const visibleWaveform = waveform.slice(startIdx);
-    const barWidth = width / barCount - 1;
-
-    for (let i = 0; i < barCount; i++) {
-      const amp = visibleWaveform[i] || 0;
-      const barHeight = Math.max(2, amp * height * 0.9);
-      const x = i * (barWidth + 1);
-      const y = (height - barHeight) / 2;
-
-      const gradient = ctx.createLinearGradient(x, y, x, y + barHeight);
-      gradient.addColorStop(0, "rgba(34, 211, 238, 0.9)");
-      gradient.addColorStop(1, "rgba(139, 92, 246, 0.9)");
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.roundRect(x, y, barWidth, barHeight, 1);
-      ctx.fill();
-    }
-  }, [waveform]);
-
-  useEffect(() => {
-    const canvas = levelCanvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-
-    const width = rect.width;
-    const height = rect.height;
-
-    ctx.clearRect(0, 0, width, height);
-
-    const segmentCount = 30;
-    const segmentWidth = width / segmentCount - 2;
-    const filledSegments = Math.floor(level * segmentCount);
-
-    for (let i = 0; i < segmentCount; i++) {
-      const x = i * (segmentWidth + 2);
-      const isFilled = i < filledSegments;
-
-      let color: string;
-      if (i < segmentCount * 0.6) {
-        color = isFilled ? "#22c55e" : "rgba(34, 197, 94, 0.2)";
-      } else if (i < segmentCount * 0.85) {
-        color = isFilled ? "#eab308" : "rgba(234, 179, 8, 0.2)";
-      } else {
-        color = isFilled ? "#ef4444" : "rgba(239, 68, 68, 0.2)";
-      }
-
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.roundRect(x, 0, segmentWidth, height, 2);
-      ctx.fill();
-    }
-  }, [level]);
+      resizeObserver.disconnect();
+    };
+  }, []);
 
   return (
     <div className="glass-card glow-border rounded-2xl p-5 space-y-5 animate-fade-in">

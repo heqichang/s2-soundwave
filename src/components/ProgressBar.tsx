@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { usePlayerStore } from "@/store/playerStore";
 import { formatTime } from "@/utils/format";
-import clsx from "clsx";
 
 interface ProgressBarProps {
   onSeek?: (time: number) => void;

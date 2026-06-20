@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from "react";
-import { Waves, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Waves, Mic, Download, RefreshCw } from "lucide-react";
 import FileUploader from "@/components/FileUploader";
 import Waveform from "@/components/Waveform";
 import PlayerControls from "@/components/PlayerControls";
@@ -9,6 +9,9 @@ import AudioInfo from "@/components/AudioInfo";
 import RecentFiles from "@/components/RecentFiles";
 import Playlist from "@/components/Playlist";
 import EditToolbar from "@/components/EditToolbar";
+import RecorderPanel from "@/components/RecorderPanel";
+import ExportDialog from "@/components/ExportDialog";
+import BatchConvertDialog from "@/components/BatchConvertDialog";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { useAudioEditor } from "@/hooks/useAudioEditor";
 import { usePlayerStore } from "@/store/playerStore";
@@ -47,7 +50,6 @@ export default function Home() {
     handleRedo,
     handleSelectAll,
     clearSelection,
-    resetEditor,
     audioBuffer,
   } = useAudioEditor();
 
@@ -55,10 +57,12 @@ export default function Home() {
     playlist,
     setPlaylist,
     setCurrentIndex,
-    currentTime,
-    duration,
     isPlaying,
   } = usePlayerStore();
+
+  const [showRecorder, setShowRecorder] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [showBatchConvert, setShowBatchConvert] = useState(false);
 
   const handleFilesSelected = useCallback(
     async (files: FileList | File[]) => {
@@ -133,6 +137,12 @@ export default function Home() {
             e.preventDefault();
             handleRedo();
             break;
+          case "e":
+            e.preventDefault();
+            if (currentFile || audioBuffer) {
+              setShowExport(true);
+            }
+            break;
         }
         return;
       }
@@ -148,11 +158,15 @@ export default function Home() {
       if (e.key === "Escape") {
         clearSelection();
       }
+
+      if (e.key === "r" && !e.ctrlKey && !e.metaKey) {
+        setShowRecorder((prev) => !prev);
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleCopy, handleCut, handlePaste, handleDelete, handleUndo, handleRedo, handleSelectAll, clearSelection]);
+  }, [handleCopy, handleCut, handlePaste, handleDelete, handleUndo, handleRedo, handleSelectAll, clearSelection, currentFile, audioBuffer]);
 
   const isInitialLoad = useRef(true);
 
@@ -190,23 +204,61 @@ export default function Home() {
               <h1 className="font-display font-bold text-2xl text-gradient tracking-tight">
                 SoundWave
               </h1>
-              <p className="text-xs text-surface-400 -mt-0.5">音频播放器</p>
+              <p className="text-xs text-surface-400 -mt-0.5">音频播放器 · 编辑器 · 转换器</p>
             </div>
           </div>
 
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-800/60 border border-surface-700/40">
-            <Sparkles size={14} className="text-brand-400" />
-            <span className="text-xs text-surface-400">空格键播放 / 暂停 · Ctrl+A 全选</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowRecorder(!showRecorder)}
+              className={clsx(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all",
+                showRecorder
+                  ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                  : "bg-surface-800/60 border border-surface-700/40 text-surface-300 hover:text-surface-100 hover:bg-surface-700/60",
+              )}
+              title="录音 (R)"
+            >
+              <Mic size={14} className={clsx(showRecorder && "animate-pulse")} />
+              <span className="hidden sm:inline">录音</span>
+            </button>
+            <button
+              onClick={() => setShowExport(true)}
+              disabled={!currentFile && !audioBuffer}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-surface-800/60 border border-surface-700/40 text-surface-300 hover:text-surface-100 hover:bg-surface-700/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title="导出 (Ctrl+E)"
+            >
+              <Download size={14} />
+              <span className="hidden sm:inline">导出</span>
+            </button>
+            <button
+              onClick={() => setShowBatchConvert(true)}
+              disabled={playlist.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-surface-800/60 border border-surface-700/40 text-surface-300 hover:text-surface-100 hover:bg-surface-700/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title="批量转换"
+            >
+              <RefreshCw size={14} />
+              <span className="hidden sm:inline">批量转换</span>
+            </button>
           </div>
         </header>
 
-        {!currentFile && playlist.length === 0 ? (
+        {!currentFile && playlist.length === 0 && !showRecorder ? (
           <div className="max-w-2xl mx-auto animate-slide-up" style={{ animationDelay: "100ms" }}>
             <FileUploader onFilesSelected={handleFilesSelected} />
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
+              {showRecorder && (
+                <div
+                  className="animate-slide-up"
+                  style={{ animationDelay: "50ms" }}
+                >
+                  <RecorderPanel onClose={() => setShowRecorder(false)} />
+                </div>
+              )}
+
               <div
                 className={clsx(
                   "glass-card glow-border rounded-2xl p-6 sm:p-8",
@@ -247,6 +299,14 @@ export default function Home() {
                         ))}
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {!currentFile && (
+                  <div className="mb-6 text-center py-4 animate-fade-in">
+                    <p className="text-surface-400 text-sm">
+                      {showRecorder ? "正在使用录音功能" : "打开或录制音频开始编辑"}
+                    </p>
                   </div>
                 )}
 
@@ -319,9 +379,12 @@ export default function Home() {
         )}
 
         <footer className="mt-12 text-center text-xs text-surface-600 animate-fade-in" style={{ animationDelay: "500ms" }}>
-          <p>© SoundWave 音频播放器 · 支持 MP3 · WAV · FLAC · AAC · OGG</p>
+          <p>© SoundWave 音频播放器 · 支持 MP3 · WAV · FLAC · AAC · OGG · AIFF · WMA</p>
         </footer>
       </div>
+
+      <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      <BatchConvertDialog open={showBatchConvert} onClose={() => setShowBatchConvert(false)} />
     </div>
   );
 }

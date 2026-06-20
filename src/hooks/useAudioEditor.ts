@@ -296,10 +296,6 @@ export function useAudioEditor() {
 
   const exportAudioBuffer = useCallback(async (): Promise<Blob | null> => {
     if (!audioBuffer) return null;
-    const AudioContextClass =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
     const offlineCtx = new OfflineAudioContext(
       audioBuffer.numberOfChannels,
       audioBuffer.length,

@@ -26,7 +26,7 @@ export function useAudioPlayer() {
     stop,
   } = usePlayerStore();
 
-  const { selection, playbackMode, audioBuffer, setAudioBuffer, resetEditor } = useEditorStore();
+  const { selection, playbackMode, setAudioBuffer } = useEditorStore();
 
   const ensureAudioElement = useCallback(() => {
     if (!audioRef.current) {
@@ -43,10 +43,6 @@ export function useAudioPlayer() {
 
   const updateAudioSrcFromBuffer = useCallback(
     async (buffer: AudioBuffer) => {
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
       const offlineCtx = new OfflineAudioContext(
         buffer.numberOfChannels,
         buffer.length,

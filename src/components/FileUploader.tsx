@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { Upload, FileAudio, X } from "lucide-react";
+import { Upload, FileAudio } from "lucide-react";
 import { AUDIO_EXTENSIONS, AUDIO_MIME_TYPES } from "@/types/audio";
 import { getFileExtension } from "@/utils/format";
 import clsx from "clsx";
@@ -10,7 +10,6 @@ interface FileUploaderProps {
 
 export default function FileUploader({ onFilesSelected }: FileUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const [dragCount, setDragCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const validateAudioFile = useCallback((file: File): boolean => {
@@ -48,7 +47,6 @@ export default function FileUploader({ onFilesSelected }: FileUploaderProps) {
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setDragCount((c) => c + 1);
     setIsDragging(true);
   };
 
@@ -61,20 +59,13 @@ export default function FileUploader({ onFilesSelected }: FileUploaderProps) {
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setDragCount((c) => {
-      const newCount = Math.max(0, c - 1);
-      if (newCount === 0) {
-        setIsDragging(false);
-      }
-      return newCount;
-    });
+    setIsDragging(false);
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-    setDragCount(0);
 
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
@@ -109,7 +100,7 @@ export default function FileUploader({ onFilesSelected }: FileUploaderProps) {
       <input
         ref={inputRef}
         type="file"
-        accept="audio/*,.mp3,.wav,.flac,.aac,.ogg,.m4a"
+        accept="audio/*,.mp3,.wav,.flac,.aac,.ogg,.m4a,.aiff,.aif,.wma"
         multiple
         className="hidden"
         onChange={handleFileChange}
@@ -135,7 +126,7 @@ export default function FileUploader({ onFilesSelected }: FileUploaderProps) {
           {isDragging ? "松开以上传文件" : "点击或拖拽音频文件到此处"}
         </p>
         <p className="text-sm text-surface-400">
-          支持 MP3、WAV、FLAC、AAC、OGG 格式
+          支持 MP3、WAV、FLAC、AAC、OGG、AIFF、WMA 格式
         </p>
       </div>
 

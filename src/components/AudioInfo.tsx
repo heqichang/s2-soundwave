@@ -10,7 +10,7 @@ import {
 } from "@/utils/format";
 
 export default function AudioInfo() {
-  const { currentFile, duration } = usePlayerStore();
+  const { currentFile } = usePlayerStore();
 
   if (!currentFile) {
     return (

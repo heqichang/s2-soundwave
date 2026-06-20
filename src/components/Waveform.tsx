@@ -191,7 +191,6 @@ export default function Waveform({ onSeek, onSelectionChange }: WaveformProps) {
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (!isDragging.current || waveformData.length === 0) return;
 
-      const dx = Math.abs(e.clientX - dragStartX.current - (containerRef.current?.getBoundingClientRect().left || 0) + (containerRef.current?.getBoundingClientRect().left || 0));
       const currentX = e.clientX - (containerRef.current?.getBoundingClientRect().left || 0);
       const distFromStart = Math.abs(currentX - dragStartX.current);
 

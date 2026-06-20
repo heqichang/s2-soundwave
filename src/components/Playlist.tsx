@@ -1,4 +1,4 @@
-import { ListMusic, X, Play, Pause, Music } from "lucide-react";
+import { ListMusic, X, Play, Pause } from "lucide-react";
 import { usePlayerStore } from "@/store/playerStore";
 import { formatTime, formatFileSize } from "@/utils/format";
 import clsx from "clsx";

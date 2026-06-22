@@ -2,25 +2,19 @@ import { useCallback } from "react";
 import { useEditorStore } from "@/store/editorStore";
 import { usePlayerStore } from "@/store/playerStore";
 import type { ClipboardData } from "@/types/editor";
-
-function cloneAudioBuffer(audioBuffer: AudioBuffer): AudioBuffer {
-  const AudioContextClass =
-    window.AudioContext ||
-    (window as unknown as { webkitAudioContext: typeof AudioContext })
-      .webkitAudioContext;
-  const ctx = new AudioContextClass();
-  const newBuffer = ctx.createBuffer(
-    audioBuffer.numberOfChannels,
-    audioBuffer.length,
-    audioBuffer.sampleRate,
-  );
-  for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-    const sourceData = audioBuffer.getChannelData(ch);
-    newBuffer.copyToChannel(new Float32Array(sourceData), ch);
-  }
-  ctx.close().catch(() => {});
-  return newBuffer;
-}
+import {
+  cloneAudioBuffer,
+  generateWaveformData,
+  audioBufferToWav,
+  applySilence,
+  applyReverse,
+  applyInvertPhase,
+  applyNormalize,
+  applyAmplify,
+  applyFadeInAdvanced,
+  applyFadeOutAdvanced,
+  applyCrossfade,
+} from "@/lib/audioUtils";
 
 function createBufferFromRange(
   audioBuffer: AudioBuffer,
@@ -32,7 +26,7 @@ function createBufferFromRange(
     (window as unknown as { webkitAudioContext: typeof AudioContext })
       .webkitAudioContext;
   const ctx = new AudioContextClass();
-  const length = endSample - startSample;
+  const length = Math.max(0, endSample - startSample);
   const newBuffer = ctx.createBuffer(
     audioBuffer.numberOfChannels,
     length,
@@ -62,59 +56,28 @@ function spliceAudioBuffer(
   const ctx = new AudioContextClass();
   const insertLength = insertBuffer ? insertBuffer.length : 0;
   const newLength =
-    startSample + insertLength + (audioBuffer.length - endSample);
+    Math.max(0, startSample) + insertLength + Math.max(0, audioBuffer.length - endSample);
   const newBuffer = ctx.createBuffer(
     audioBuffer.numberOfChannels,
-    newLength,
+    Math.max(0, newLength),
     audioBuffer.sampleRate,
   );
   for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
     const sourceData = audioBuffer.getChannelData(ch);
     const newData = newBuffer.getChannelData(ch);
     let offset = 0;
-    newData.set(sourceData.slice(0, startSample), offset);
-    offset += startSample;
+    const clampedStart = Math.max(0, Math.min(startSample, audioBuffer.length));
+    const clampedEnd = Math.max(clampedStart, Math.min(endSample, audioBuffer.length));
+    newData.set(sourceData.slice(0, clampedStart), offset);
+    offset += clampedStart;
     if (insertBuffer) {
       newData.set(insertBuffer.getChannelData(ch), offset);
       offset += insertBuffer.length;
     }
-    newData.set(sourceData.slice(endSample), offset);
+    newData.set(sourceData.slice(clampedEnd), offset);
   }
   ctx.close().catch(() => {});
   return newBuffer;
-}
-
-function applyFadeIn(
-  audioBuffer: AudioBuffer,
-  startSample: number,
-  fadeSamples: number,
-): AudioBuffer {
-  const result = cloneAudioBuffer(audioBuffer);
-  const actualFade = Math.min(fadeSamples, result.length - startSample);
-  for (let ch = 0; ch < result.numberOfChannels; ch++) {
-    const data = result.getChannelData(ch);
-    for (let i = 0; i < actualFade; i++) {
-      data[startSample + i] *= i / actualFade;
-    }
-  }
-  return result;
-}
-
-function applyFadeOut(
-  audioBuffer: AudioBuffer,
-  endSample: number,
-  fadeSamples: number,
-): AudioBuffer {
-  const result = cloneAudioBuffer(audioBuffer);
-  const startFade = Math.max(0, endSample - fadeSamples);
-  const actualFade = endSample - startFade;
-  for (let ch = 0; ch < result.numberOfChannels; ch++) {
-    const data = result.getChannelData(ch);
-    for (let i = 0; i < actualFade; i++) {
-      data[startFade + i] *= 1 - i / actualFade;
-    }
-  }
-  return result;
 }
 
 export function useAudioEditor() {
@@ -123,6 +86,8 @@ export function useAudioEditor() {
     clipboard,
     audioBuffer,
     fadeConfig,
+    amplifyConfig,
+    crossfadeConfig,
     setSelection,
     clearSelection,
     selectAll,
@@ -134,6 +99,7 @@ export function useAudioEditor() {
     canUndo,
     canRedo,
     resetEditor,
+    setPeakData,
   } = useEditorStore();
 
   const { duration, setDuration, setWaveformData } = usePlayerStore();
@@ -157,23 +123,8 @@ export function useAudioEditor() {
 
   const regenerateWaveform = useCallback(
     (buffer: AudioBuffer) => {
-      const rawData = buffer.getChannelData(0);
-      const samples = 120;
-      const blockSize = Math.floor(rawData.length / samples);
-      const filteredData: number[] = [];
-      for (let i = 0; i < samples; i++) {
-        const blockStart = blockSize * i;
-        let sum = 0;
-        for (let j = 0; j < blockSize; j++) {
-          sum += Math.abs(rawData[blockStart + j]);
-        }
-        filteredData.push(sum / blockSize);
-      }
-      const maxVal = Math.max(...filteredData);
-      const normalizedData = filteredData.map((n) =>
-        maxVal > 0 ? n / maxVal : 0,
-      );
-      setWaveformData(normalizedData);
+      const data = generateWaveformData(buffer, 240);
+      setWaveformData(data);
     },
     [setWaveformData],
   );
@@ -186,8 +137,9 @@ export function useAudioEditor() {
       setDuration(cloned.duration);
       regenerateWaveform(cloned);
       clearSelection();
+      setPeakData(null);
     },
-    [setAudioBuffer, pushHistory, setDuration, regenerateWaveform, clearSelection],
+    [setAudioBuffer, pushHistory, setDuration, regenerateWaveform, clearSelection, setPeakData],
   );
 
   const handleCopy = useCallback(() => {
@@ -195,8 +147,10 @@ export function useAudioEditor() {
     const sampleRate = audioBuffer.sampleRate;
     const startSample = Math.floor(selection.start * sampleRate);
     const endSample = Math.floor(selection.end * sampleRate);
-    const clippedEnd = Math.min(endSample, audioBuffer.length);
-    const copiedBuffer = createBufferFromRange(audioBuffer, startSample, clippedEnd);
+    const clippedStart = Math.max(0, Math.min(startSample, audioBuffer.length));
+    const clippedEnd = Math.max(clippedStart, Math.min(endSample, audioBuffer.length));
+    if (clippedEnd <= clippedStart) return;
+    const copiedBuffer = createBufferFromRange(audioBuffer, clippedStart, clippedEnd);
     const clipboardData: ClipboardData = {
       audioBuffer: copiedBuffer,
       start: selection.start,
@@ -211,8 +165,10 @@ export function useAudioEditor() {
     const sampleRate = audioBuffer.sampleRate;
     const startSample = Math.floor(selection.start * sampleRate);
     const endSample = Math.floor(selection.end * sampleRate);
-    const clippedEnd = Math.min(endSample, audioBuffer.length);
-    const newBuffer = spliceAudioBuffer(audioBuffer, startSample, clippedEnd);
+    const clippedStart = Math.max(0, Math.min(startSample, audioBuffer.length));
+    const clippedEnd = Math.max(clippedStart, Math.min(endSample, audioBuffer.length));
+    if (clippedEnd <= clippedStart) return;
+    const newBuffer = spliceAudioBuffer(audioBuffer, clippedStart, clippedEnd);
     commitEdit(newBuffer, "剪切");
   }, [selection, audioBuffer, handleCopy, commitEdit]);
 
@@ -221,10 +177,11 @@ export function useAudioEditor() {
     const pasteTarget = selection
       ? Math.floor(selection.start * audioBuffer.sampleRate)
       : Math.floor(duration * audioBuffer.sampleRate);
+    const clampedTarget = Math.max(0, Math.min(pasteTarget, audioBuffer.length));
     const newBuffer = spliceAudioBuffer(
       audioBuffer,
-      pasteTarget,
-      pasteTarget,
+      clampedTarget,
+      clampedTarget,
       clipboard.audioBuffer,
     );
     commitEdit(newBuffer, "粘贴");
@@ -235,8 +192,10 @@ export function useAudioEditor() {
     const sampleRate = audioBuffer.sampleRate;
     const startSample = Math.floor(selection.start * sampleRate);
     const endSample = Math.floor(selection.end * sampleRate);
-    const clippedEnd = Math.min(endSample, audioBuffer.length);
-    const newBuffer = spliceAudioBuffer(audioBuffer, startSample, clippedEnd);
+    const clippedStart = Math.max(0, Math.min(startSample, audioBuffer.length));
+    const clippedEnd = Math.max(clippedStart, Math.min(endSample, audioBuffer.length));
+    if (clippedEnd <= clippedStart) return;
+    const newBuffer = spliceAudioBuffer(audioBuffer, clippedStart, clippedEnd);
     commitEdit(newBuffer, "删除");
   }, [selection, audioBuffer, commitEdit]);
 
@@ -245,28 +204,105 @@ export function useAudioEditor() {
     const sampleRate = audioBuffer.sampleRate;
     const startSample = Math.floor(selection.start * sampleRate);
     const endSample = Math.floor(selection.end * sampleRate);
-    const clippedEnd = Math.min(endSample, audioBuffer.length);
-    const newBuffer = createBufferFromRange(audioBuffer, startSample, clippedEnd);
+    const clippedStart = Math.max(0, Math.min(startSample, audioBuffer.length));
+    const clippedEnd = Math.max(clippedStart, Math.min(endSample, audioBuffer.length));
+    if (clippedEnd <= clippedStart) return;
+    const newBuffer = createBufferFromRange(audioBuffer, clippedStart, clippedEnd);
     commitEdit(newBuffer, "裁剪");
   }, [selection, audioBuffer, commitEdit]);
+
+  const handleSilence = useCallback(() => {
+    if (!selection || !audioBuffer) return;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor(selection.start * sampleRate);
+    const endSample = Math.floor(selection.end * sampleRate);
+    const newBuffer = applySilence(audioBuffer, startSample, endSample);
+    commitEdit(newBuffer, "静音");
+  }, [selection, audioBuffer, commitEdit]);
+
+  const handleReverse = useCallback(() => {
+    if (!selection || !audioBuffer) return;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor(selection.start * sampleRate);
+    const endSample = Math.floor(selection.end * sampleRate);
+    const newBuffer = applyReverse(audioBuffer, startSample, endSample);
+    commitEdit(newBuffer, "反转");
+  }, [selection, audioBuffer, commitEdit]);
+
+  const handleInvertPhase = useCallback(() => {
+    if (!selection || !audioBuffer) return;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor(selection.start * sampleRate);
+    const endSample = Math.floor(selection.end * sampleRate);
+    const newBuffer = applyInvertPhase(audioBuffer, startSample, endSample);
+    commitEdit(newBuffer, "反转相位");
+  }, [selection, audioBuffer, commitEdit]);
+
+  const handleNormalize = useCallback(() => {
+    if (!selection || !audioBuffer) return;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor(selection.start * sampleRate);
+    const endSample = Math.floor(selection.end * sampleRate);
+    const clippedStart = Math.max(0, Math.min(startSample, audioBuffer.length));
+    const clippedEnd = Math.max(clippedStart, Math.min(endSample, audioBuffer.length));
+    const selectedBuffer = createBufferFromRange(audioBuffer, clippedStart, clippedEnd);
+    const normalizedSelected = applyNormalize(selectedBuffer, 0);
+    const newBuffer = spliceAudioBuffer(
+      audioBuffer,
+      clippedStart,
+      clippedEnd,
+      normalizedSelected,
+    );
+    commitEdit(newBuffer, "标准化");
+  }, [selection, audioBuffer, commitEdit]);
+
+  const handleAmplify = useCallback(() => {
+    if (!selection || !audioBuffer) return;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor(selection.start * sampleRate);
+    const endSample = Math.floor(selection.end * sampleRate);
+    const newBuffer = applyAmplify(audioBuffer, startSample, endSample, amplifyConfig);
+    commitEdit(newBuffer, `增益 ${amplifyConfig.gainDb > 0 ? "+" : ""}${amplifyConfig.gainDb.toFixed(1)}dB`);
+  }, [selection, audioBuffer, amplifyConfig, commitEdit]);
 
   const handleFadeIn = useCallback(() => {
     if (!selection || !audioBuffer) return;
     const sampleRate = audioBuffer.sampleRate;
     const startSample = Math.floor(selection.start * sampleRate);
     const fadeSamples = Math.floor(fadeConfig.fadeInDuration * sampleRate);
-    const newBuffer = applyFadeIn(audioBuffer, startSample, fadeSamples);
-    commitEdit(newBuffer, "淡入");
-  }, [selection, audioBuffer, fadeConfig.fadeInDuration, commitEdit]);
+    const newBuffer = applyFadeInAdvanced(
+      audioBuffer,
+      startSample,
+      fadeSamples,
+      fadeConfig.fadeInCurve,
+    );
+    commitEdit(newBuffer, `淡入 (${fadeConfig.fadeInCurve})`);
+  }, [selection, audioBuffer, fadeConfig, commitEdit]);
 
   const handleFadeOut = useCallback(() => {
     if (!selection || !audioBuffer) return;
     const sampleRate = audioBuffer.sampleRate;
     const endSample = Math.floor(selection.end * sampleRate);
     const fadeSamples = Math.floor(fadeConfig.fadeOutDuration * sampleRate);
-    const newBuffer = applyFadeOut(audioBuffer, endSample, fadeSamples);
-    commitEdit(newBuffer, "淡出");
-  }, [selection, audioBuffer, fadeConfig.fadeOutDuration, commitEdit]);
+    const newBuffer = applyFadeOutAdvanced(
+      audioBuffer,
+      endSample,
+      fadeSamples,
+      fadeConfig.fadeOutCurve,
+    );
+    commitEdit(newBuffer, `淡出 (${fadeConfig.fadeOutCurve})`);
+  }, [selection, audioBuffer, fadeConfig, commitEdit]);
+
+  const handleCrossfade = useCallback(() => {
+    if (!clipboard || !audioBuffer || !selection) return;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor(selection.start * sampleRate);
+    const endSample = Math.floor(selection.end * sampleRate);
+    const selectedBuffer = createBufferFromRange(audioBuffer, startSample, endSample);
+    const xFadedBuffer = applyCrossfade(selectedBuffer, clipboard.audioBuffer, crossfadeConfig);
+    const newBuffer = spliceAudioBuffer(audioBuffer, startSample, endSample, xFadedBuffer);
+    commitEdit(newBuffer, "交叉淡化");
+  }, [clipboard, audioBuffer, selection, crossfadeConfig, commitEdit]);
 
   const handleUndo = useCallback(() => {
     const prevBuffer = undo();
@@ -275,8 +311,9 @@ export function useAudioEditor() {
       setDuration(prevBuffer.duration);
       regenerateWaveform(prevBuffer);
       clearSelection();
+      setPeakData(null);
     }
-  }, [undo, setAudioBuffer, setDuration, regenerateWaveform, clearSelection]);
+  }, [undo, setAudioBuffer, setDuration, regenerateWaveform, clearSelection, setPeakData]);
 
   const handleRedo = useCallback(() => {
     const nextBuffer = redo();
@@ -285,8 +322,9 @@ export function useAudioEditor() {
       setDuration(nextBuffer.duration);
       regenerateWaveform(nextBuffer);
       clearSelection();
+      setPeakData(null);
     }
-  }, [redo, setAudioBuffer, setDuration, regenerateWaveform, clearSelection]);
+  }, [redo, setAudioBuffer, setDuration, regenerateWaveform, clearSelection, setPeakData]);
 
   const handleSelectAll = useCallback(() => {
     if (audioBuffer) {
@@ -315,14 +353,22 @@ export function useAudioEditor() {
     clipboard,
     audioBuffer,
     fadeConfig,
+    amplifyConfig,
+    crossfadeConfig,
     loadAudioBuffer,
     handleCopy,
     handleCut,
     handlePaste,
     handleDelete,
     handleTrim,
+    handleSilence,
+    handleReverse,
+    handleInvertPhase,
+    handleNormalize,
+    handleAmplify,
     handleFadeIn,
     handleFadeOut,
+    handleCrossfade,
     handleUndo,
     handleRedo,
     handleSelectAll,
@@ -333,55 +379,4 @@ export function useAudioEditor() {
     resetEditor,
     exportAudioBuffer,
   };
-}
-
-function audioBufferToWav(buffer: AudioBuffer): Blob {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const format = 1;
-  const bitDepth = 16;
-  const bytesPerSample = bitDepth / 8;
-  const blockAlign = numChannels * bytesPerSample;
-  const dataLength = buffer.length * blockAlign;
-  const headerLength = 44;
-  const totalLength = headerLength + dataLength;
-  const arrayBuffer = new ArrayBuffer(totalLength);
-  const view = new DataView(arrayBuffer);
-
-  function writeString(offset: number, str: string) {
-    for (let i = 0; i < str.length; i++) {
-      view.setUint8(offset + i, str.charCodeAt(i));
-    }
-  }
-
-  writeString(0, "RIFF");
-  view.setUint32(4, totalLength - 8, true);
-  writeString(8, "WAVE");
-  writeString(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, format, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitDepth, true);
-  writeString(36, "data");
-  view.setUint32(40, dataLength, true);
-
-  const channels: Float32Array[] = [];
-  for (let ch = 0; ch < numChannels; ch++) {
-    channels.push(buffer.getChannelData(ch));
-  }
-
-  let offset = 44;
-  for (let i = 0; i < buffer.length; i++) {
-    for (let ch = 0; ch < numChannels; ch++) {
-      const sample = Math.max(-1, Math.min(1, channels[ch][i]));
-      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-      view.setInt16(offset, intSample, true);
-      offset += 2;
-    }
-  }
-
-  return new Blob([arrayBuffer], { type: "audio/wav" });
 }

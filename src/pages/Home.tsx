@@ -12,10 +12,13 @@ import EditToolbar from "@/components/EditToolbar";
 import RecorderPanel from "@/components/RecorderPanel";
 import ExportDialog from "@/components/ExportDialog";
 import BatchConvertDialog from "@/components/BatchConvertDialog";
+import MarkerList from "@/components/MarkerList";
+import AnalysisTools from "@/components/AnalysisTools";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { useAudioEditor } from "@/hooks/useAudioEditor";
 import { usePlayerStore } from "@/store/playerStore";
 import { useEditorStore } from "@/store/editorStore";
+import { MARKER_COLORS } from "@/types/editor";
 import type { AudioFile } from "@/types/audio";
 import { getFileNameWithoutExtension } from "@/utils/format";
 import clsx from "clsx";
@@ -51,6 +54,12 @@ export default function Home() {
     handleSelectAll,
     clearSelection,
     audioBuffer,
+    handleSilence,
+    handleReverse,
+    handleInvertPhase,
+    handleNormalize,
+    handleAmplify,
+    handleCrossfade,
   } = useAudioEditor();
 
   const {
@@ -58,7 +67,17 @@ export default function Home() {
     setPlaylist,
     setCurrentIndex,
     isPlaying,
+    currentTime,
+    duration,
   } = usePlayerStore();
+
+  const {
+    markers,
+    addMarker,
+    selection,
+    setZoomConfig,
+    resetZoom,
+  } = useEditorStore();
 
   const [showRecorder, setShowRecorder] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -70,6 +89,15 @@ export default function Home() {
       if (loaded.length > 0) {
         setPlaylist(loaded);
         setCurrentIndex(0);
+        const state = useEditorStore.getState();
+        if (loaded[0] && loaded[0].duration) {
+          state.setZoomConfig({
+            viewStart: 0,
+            viewEnd: loaded[0].duration,
+            horizontal: 1,
+            vertical: 1,
+          });
+        }
         setTimeout(() => {
           play();
         }, 100);
@@ -95,6 +123,22 @@ export default function Home() {
     [playlist, play],
   );
 
+  const handleJumpToTime = useCallback(
+    (time: number) => {
+      seekByPercent(Math.max(0, Math.min(1, time / (duration || 1))));
+    },
+    [seekByPercent, duration],
+  );
+
+  const handleAddMarker = useCallback(() => {
+    const colorIdx = markers.length % MARKER_COLORS.length;
+    addMarker({
+      time: currentTime,
+      name: `标记 ${markers.length + 1}`,
+      color: MARKER_COLORS[colorIdx],
+    });
+  }, [addMarker, markers.length, currentTime]);
+
   useEffect(() => {
     document.title = currentFile
       ? `${getFileNameWithoutExtension(currentFile.name)} - SoundWave`
@@ -103,7 +147,7 @@ export default function Home() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
         return;
       }
 
@@ -143,13 +187,65 @@ export default function Home() {
               setShowExport(true);
             }
             break;
+          case "0":
+            e.preventDefault();
+            if (duration > 0) {
+              resetZoom(duration);
+            }
+            break;
         }
         return;
       }
 
-      if (e.key === "Delete" || e.key === "Backspace") {
-        const { selection } = useEditorStore.getState();
+      if (e.key === "m" || e.key === "M") {
+        e.preventDefault();
+        handleAddMarker();
+        return;
+      }
+
+      if (e.key === "s" || e.key === "S") {
         if (selection) {
+          e.preventDefault();
+          handleSilence();
+          return;
+        }
+      }
+
+      if ((e.key === "r" || e.key === "R") && e.shiftKey) {
+        if (selection) {
+          e.preventDefault();
+          handleReverse();
+          return;
+        }
+      }
+
+      if (e.key === "n" || e.key === "N") {
+        if (selection) {
+          e.preventDefault();
+          handleNormalize();
+          return;
+        }
+      }
+
+      if (e.key === "g" || e.key === "G") {
+        if (selection) {
+          e.preventDefault();
+          handleAmplify();
+          return;
+        }
+      }
+
+      if (e.key === "i" || e.key === "I") {
+        if (selection) {
+          e.preventDefault();
+          handleInvertPhase();
+          return;
+        }
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const { selection: sel } = useEditorStore.getState();
+        if (sel) {
           e.preventDefault();
           handleDelete();
         }
@@ -159,14 +255,58 @@ export default function Home() {
         clearSelection();
       }
 
-      if (e.key === "r" && !e.ctrlKey && !e.metaKey) {
+      if (e.key === "r" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         setShowRecorder((prev) => !prev);
+      }
+
+      if (e.key === "+" || e.key === "=") {
+        if (duration > 0 && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          const { zoomConfig } = useEditorStore.getState();
+          const range = zoomConfig.viewEnd - zoomConfig.viewStart;
+          const center = (zoomConfig.viewStart + zoomConfig.viewEnd) / 2;
+          const newRange = Math.max(0.001, range * 0.6);
+          let newStart = center - newRange / 2;
+          let newEnd = center + newRange / 2;
+          if (newStart < 0) { newStart = 0; newEnd = newRange; }
+          if (newEnd > duration) { newEnd = duration; newStart = duration - newRange; }
+          setZoomConfig({
+            viewStart: newStart,
+            viewEnd: newEnd,
+            horizontal: duration / newRange,
+          });
+        }
+      }
+
+      if (e.key === "-" || e.key === "_") {
+        if (duration > 0 && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          const { zoomConfig } = useEditorStore.getState();
+          const range = zoomConfig.viewEnd - zoomConfig.viewStart;
+          const center = (zoomConfig.viewStart + zoomConfig.viewEnd) / 2;
+          const newRange = Math.min(duration, range * 1.6);
+          let newStart = center - newRange / 2;
+          let newEnd = center + newRange / 2;
+          if (newStart < 0) { newStart = 0; newEnd = newRange; }
+          if (newEnd > duration) { newEnd = duration; newStart = duration - newRange; }
+          setZoomConfig({
+            viewStart: newStart,
+            viewEnd: newEnd,
+            horizontal: duration / newRange,
+          });
+        }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleCopy, handleCut, handlePaste, handleDelete, handleUndo, handleRedo, handleSelectAll, clearSelection, currentFile, audioBuffer]);
+  }, [
+    handleCopy, handleCut, handlePaste, handleDelete, handleUndo, handleRedo,
+    handleSelectAll, clearSelection, currentFile, audioBuffer,
+    handleAddMarker, selection, handleSilence, handleReverse,
+    handleNormalize, handleAmplify, handleInvertPhase,
+    duration, resetZoom, setZoomConfig,
+  ]);
 
   const isInitialLoad = useRef(true);
 
@@ -193,7 +333,7 @@ export default function Home() {
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[700px] bg-brand-400/5 rounded-full blur-3xl" />
       </div>
 
-      <div className="relative z-10 container max-w-6xl mx-auto px-4 py-8 sm:py-10">
+      <div className="relative z-10 container max-w-7xl mx-auto px-4 py-8 sm:py-10">
         <header className="flex items-center justify-between mb-8 sm:mb-10 animate-slide-up">
           <div className="flex items-center gap-3">
             <div className="relative w-11 h-11 rounded-xl bg-gradient-to-br from-brand-400 to-accent-500 flex items-center justify-center shadow-lg shadow-brand-500/20">
@@ -248,8 +388,8 @@ export default function Home() {
             <FileUploader onFilesSelected={handleFilesSelected} />
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-6">
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            <div className="xl:col-span-2 space-y-6">
               {showRecorder && (
                 <div
                   className="animate-slide-up"
@@ -328,6 +468,11 @@ export default function Home() {
                   onRedo={handleRedo}
                   onFadeIn={handleFadeIn}
                   onFadeOut={handleFadeOut}
+                  onSilence={handleSilence}
+                  onReverse={handleReverse}
+                  onInvertPhase={handleInvertPhase}
+                  onNormalize={handleNormalize}
+                  onAmplify={handleAmplify}
                 />
 
                 <div className="mt-4">
@@ -366,6 +511,20 @@ export default function Home() {
                 style={{ animationDelay: "150ms" }}
               >
                 <AudioInfo />
+              </div>
+
+              <div
+                className="animate-slide-up"
+                style={{ animationDelay: "175ms" }}
+              >
+                <MarkerList onJumpTo={handleJumpToTime} />
+              </div>
+
+              <div
+                className="animate-slide-up"
+                style={{ animationDelay: "200ms" }}
+              >
+                <AnalysisTools />
               </div>
 
               <div
